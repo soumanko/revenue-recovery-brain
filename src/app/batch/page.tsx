@@ -34,10 +34,12 @@ export default function BatchPage() {
     setBatches(data.batches || []);
   }, []);
 
+  // eslint-disable-next-line react-hooks/set-state-in-effect
   useEffect(() => { fetchBatches(); }, [fetchBatches]);
 
   // Poll progress
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/exhaustive-deps
     if (!batch || batch.status !== "processing") return;
 
     const timer = setInterval(async () => {

@@ -8,6 +8,7 @@ import type {
   MerchantPolicy,
   BatchRun,
   ActivityFeedItem,
+  RecoveryCampaign,
 } from "./types";
 
 // ─── In-Memory Data Store ────────────────────────────────────
@@ -22,8 +23,11 @@ class DataStore {
   policy: MerchantPolicy;
   batches: Map<string, BatchRun> = new Map();
   activityFeed: ActivityFeedItem[] = [];
+  campaigns: Map<string, RecoveryCampaign> = new Map();
 
   private initialized = false;
+  private eventCounter = 1;
+  private caseCounter = 1;
 
   constructor() {
     this.policy = {
@@ -43,6 +47,13 @@ class DataStore {
     if (this.initialized) return;
     this.initialized = true;
     seedData(this);
+
+    // Start background loop for the autonomous operations center
+    setInterval(() => {
+      import("./campaign").then(mod => {
+        mod.processCampaignQueue();
+      });
+    }, 2000);
   }
 
   reset() {
@@ -53,19 +64,25 @@ class DataStore {
     this.auditLog = [];
     this.batches.clear();
     this.activityFeed = [];
+    this.campaigns.clear();
+    this.eventCounter = 1;
+    this.caseCounter = 1;
     this.initialized = false;
     this.init();
   }
 
   // Helper to generate IDs
   nextEventId(): string {
-    return `EVT_${String(this.events.size + 1).padStart(4, "0")}`;
+    return `EVT_${String(this.eventCounter++).padStart(4, "0")}`;
   }
   nextCaseId(): string {
-    return `CASE_${String(this.cases.size + 1).padStart(4, "0")}`;
+    return `CASE_${String(this.caseCounter++).padStart(4, "0")}`;
   }
   nextActionId(): string {
     return `ACT_${uuidv4().slice(0, 8)}`;
+  }
+  nextCampaignId(): string {
+    return `CAMP_${uuidv4().slice(0, 8)}`;
   }
 }
 
@@ -257,6 +274,23 @@ function seedData(db: DataStore) {
       createdAt: evt.createdAt,
       updatedAt: evt.updatedAt,
     });
+  });
+
+  // ─── Seed a Campaign ─────────────────────────────────────────
+  const campaignId = db.nextCampaignId();
+  db.campaigns.set(campaignId, {
+    id: campaignId,
+    name: "High Value Rescue Campaign",
+    status: "RUNNING",
+    targetCaseIds: allEvents.map((evt) => Array.from(db.cases.values()).find(c => c.eventId === evt.id)?.id || ""),
+    processedCaseIds: [],
+    recoveredCaseIds: [],
+    failedCaseIds: [],
+    escalatedCaseIds: [],
+    totalTargetAmount: allEvents.reduce((sum, evt) => sum + evt.amount, 0),
+    totalRecoveredAmount: 0,
+    startedAt: new Date().toISOString(),
+    createdAt: new Date().toISOString(),
   });
 }
 

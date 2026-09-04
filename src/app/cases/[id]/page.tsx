@@ -4,17 +4,16 @@ import { useState, useEffect, use } from "react";
 import Link from "next/link";
 import {
   ArrowLeft,
-  AlertTriangle,
+  AlertCircle,
+  Activity,
   CheckCircle2,
-  XCircle,
-  User,
   Clock,
-  Target,
+  ExternalLink,
+  ShieldAlert,
   Brain,
-  Shield,
   Zap,
-  Phone,
-  ArrowUpCircle,
+  User,
+  Shield,
 } from "lucide-react";
 import type {
   RecoveryCase,
@@ -38,10 +37,10 @@ const stateColors: Record<string, string> = {
   ESCALATED: "bg-amber-500/20 text-amber-400 border-amber-500/30",
 };
 
-const stateIcons: Record<string, typeof AlertTriangle> = {
-  DETECTED: AlertTriangle, DIAGNOSING: Brain, ACTION_SELECTED: Target,
+const stateIcons: Record<string, typeof AlertCircle> = {
+  DETECTED: AlertCircle, DIAGNOSING: Brain, ACTION_SELECTED: Activity,
   ACTION_EXECUTING: Zap, WAITING_FOR_RESULT: Clock, RECOVERED: CheckCircle2,
-  FAILED: XCircle, STOPPED: XCircle, ESCALATED: ArrowUpCircle,
+  FAILED: ExternalLink, STOPPED: ShieldAlert, ESCALATED: ShieldAlert,
 };
 
 const actionLabels: Record<string, string> = {
@@ -115,7 +114,7 @@ export default function CaseDetailPage({ params }: { params: Promise<{ id: strin
   const { case: rc, event, customer, actions, auditEntries, activities } = data;
   const diagnosis: DiagnosisResult | null = rc.diagnosis ? JSON.parse(rc.diagnosis) : null;
   const isResolved = ["RECOVERED", "STOPPED", "ESCALATED"].includes(rc.state);
-  const StateIcon = stateIcons[rc.state] || AlertTriangle;
+  const StateIcon = stateIcons[rc.state] || AlertCircle;
 
   return (
     <div className="p-6 max-w-[1200px] mx-auto space-y-6 fade-in">
@@ -217,7 +216,7 @@ export default function CaseDetailPage({ params }: { params: Promise<{ id: strin
           {rc.recoveryScore !== undefined && rc.recoveryScore !== null && (
             <div className="glass-card p-6">
               <h2 className="text-sm font-semibold text-[var(--color-text-muted)] uppercase tracking-wider flex items-center gap-2 mb-4">
-                <Target className="w-4 h-4" />
+                <Zap className="w-4 h-4" />
                 Recovery Probability
               </h2>
               <div className="flex items-center gap-6">
@@ -345,7 +344,7 @@ export default function CaseDetailPage({ params }: { params: Promise<{ id: strin
                 { label: "Previous Failed Payments", value: customer.failedPayments },
                 { label: "Total Orders", value: customer.totalOrders },
                 { label: "Average Order Value", value: `₹${customer.averageOrderValue.toLocaleString("en-IN")}` },
-                { label: "Total Spent", value: `₹${customer.totalSpent.toLocaleString("en-IN")}` },
+                { label: "Lifetime Value (LTV)", value: `₹${customer.totalSpent.toLocaleString("en-IN")}` },
                 { label: "Language", value: customer.preferredLanguage },
               ].map((item) => (
                 <div key={item.label} className="flex justify-between items-center py-1 border-b border-[var(--color-border)]/50">

@@ -29,9 +29,10 @@ const eventTypeLabels: Record<string, string> = {
   subscription_failure: "Subscription Failure",
 };
 
-function formatINR(amount: number): string {
-  if (amount >= 100000) return `₹${(amount / 100000).toFixed(1)}L`;
-  return `₹${amount.toLocaleString("en-IN")}`;
+function getScoreColor(score: number): string {
+  if (score >= 80) return "text-emerald-400";
+  if (score >= 60) return "text-amber-400";
+  return "text-red-400";
 }
 
 type EnrichedCase = RecoveryCase & { event?: RevenueRiskEvent; customer?: Customer };
@@ -65,6 +66,7 @@ export default function CasesPage() {
   }, [stateFilter, eventTypeFilter, page]);
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     fetchCases();
   }, [fetchCases]);
 

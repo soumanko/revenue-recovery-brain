@@ -20,6 +20,7 @@ export type RecoveryState =
   | "ACTION_EXECUTING"
   | "WAITING_FOR_RESULT"
   | "DELAYED_RETRY_SCHEDULED"
+  | "VOICE_SCHEDULED"
   | "RECOVERED"
   | "FAILED"
   | "STOPPED"
@@ -36,6 +37,8 @@ export type ActionType =
   | "delayed_retry"
   | "customer_notification"
   | "hinglish_voice_call"
+  | "schedule_voice_recovery"
+  | "execute_voice_recovery"
   | "escalation"
   | "stop_recovery";
 
@@ -95,6 +98,8 @@ export interface RecoveryCase {
   recoveryTimeMs?: number;
   scoreBreakdown?: string;
   isSimulated: boolean;
+  scheduledFor?: string;
+  nextAttemptAt?: string;
   createdAt: string;
   updatedAt: string;
   resolvedAt?: string;
@@ -161,6 +166,25 @@ export interface BatchRun {
   createdAt: string;
 }
 
+export type CampaignStatus = "DRAFT" | "SCHEDULED" | "RUNNING" | "PAUSED" | "COMPLETED";
+
+export interface RecoveryCampaign {
+  id: string;
+  name: string;
+  status: CampaignStatus;
+  targetCaseIds: string[];
+  processedCaseIds: string[];
+  recoveredCaseIds: string[];
+  failedCaseIds: string[];
+  escalatedCaseIds: string[];
+  totalTargetAmount: number;
+  totalRecoveredAmount: number;
+  scheduledFor?: string;
+  startedAt?: string;
+  completedAt?: string;
+  createdAt: string;
+}
+
 export interface ActivityFeedItem {
   id: string;
   caseId?: string;
@@ -213,6 +237,8 @@ export interface ActionDecision {
   action: ActionType;
   reason: string;
   confidence: number;
+  nextAttemptAt?: string;
+  delayReason?: string;
   alternativeActions: { action: ActionType; reason: string }[];
 }
 
@@ -231,6 +257,8 @@ export interface ExecutionResult {
   details: string;
   isSimulated: boolean;
   executionTimeMs: number;
+  nextAttemptAt?: string;
+  delayReason?: string;
 }
 
 // ─── Voice Types ─────────────────────────────────────────────

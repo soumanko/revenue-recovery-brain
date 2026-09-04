@@ -165,13 +165,13 @@ export function evaluatePolicy(
     }
   }
 
-  if (["customer_notification", "hinglish_voice_call"].includes(action)) {
+  if (["customer_notification", "hinglish_voice_call", "schedule_voice_recovery", "execute_voice_recovery"].includes(action)) {
     if (recoveryCase.customerContacts >= policy.maxCustomerContacts) {
       violations.push(`Max customer contacts (${policy.maxCustomerContacts}) reached.`);
     }
   }
 
-  if (action === "hinglish_voice_call") {
+  if (["hinglish_voice_call", "schedule_voice_recovery", "execute_voice_recovery"].includes(action)) {
     if (!policy.enableVoiceRecovery) {
       violations.push("Voice recovery is disabled by merchant policy.");
     }
@@ -225,11 +225,11 @@ export function selectRecoveryAction(
   }
 
   // 2. High-value Voice Recovery (if allowed)
-  const voiceCheck = evaluatePolicy(recoveryCase, event, "hinglish_voice_call", score, customer, policy);
+  const voiceCheck = evaluatePolicy(recoveryCase, event, "schedule_voice_recovery", score, customer, policy);
   if (voiceCheck.allowed) {
     if (recoveryCase.totalAttempts > 0 || event.failureReason === "insufficient_funds" || diagnosis.isTransient) {
       return {
-        action: "hinglish_voice_call",
+        action: "schedule_voice_recovery",
         reason: `Voice recovery is appropriate for high-value cart (₹${event.amount.toLocaleString("en-IN")}) with ${score}% probability.`,
         confidence: score,
         alternativeActions: [],
@@ -266,6 +266,8 @@ export function selectRecoveryAction(
       action: "delayed_retry",
       reason: `Moderate probability (${score}%). Scheduling delayed retry to allow conditions to improve.`,
       confidence: score,
+      nextAttemptAt: new Date(Date.now() + 4 * 60 * 60 * 1000).toISOString(), // 4 hours
+      delayReason: "Waiting 4 hours for customer funds to replenish or temporary issue to resolve.",
       alternativeActions: [],
     };
   }
@@ -357,6 +359,19 @@ export function executeRecoveryAction(
       };
     }
 
+    case "schedule_voice_recovery": {
+      return {
+        success: false,
+        action,
+        result: "awaiting_retry",
+        amountRecovered: 0,
+        details: "Voice recovery scheduled for 1 hour from now.",
+        isSimulated: true,
+        executionTimeMs: 100,
+      };
+    }
+
+    case "execute_voice_recovery":
     case "hinglish_voice_call": {
       // Simulate voice recovery — high success for eligible cases
       const success = Math.random() < 0.72;
@@ -567,8 +582,14 @@ export function processRecoveryCase(caseId: string, requestedAction?: ActionType
     recoveryCase.totalAttempts++;
     event.retryCount++;
   }
-  if (["customer_notification", "hinglish_voice_call"].includes(decision.action)) {
+  if (["customer_notification", "hinglish_voice_call", "execute_voice_recovery"].includes(decision.action)) {
     recoveryCase.customerContacts++;
+  }
+
+  // Handle scheduling logic
+  if (decision.action === "schedule_voice_recovery") {
+    // Schedule for 1 hour from now
+    recoveryCase.scheduledFor = new Date(Date.now() + 60 * 60 * 1000).toISOString();
   }
 
   // Record the action
@@ -625,7 +646,14 @@ export function processRecoveryCase(caseId: string, requestedAction?: ActionType
       type: "stop",
     });
   } else if (result.result === "awaiting_retry") {
-    recoveryCase.state = decision.action === "delayed_retry" ? "DELAYED_RETRY_SCHEDULED" : "WAITING_FOR_RESULT";
+    if (decision.action === "delayed_retry") {
+      recoveryCase.state = "DELAYED_RETRY_SCHEDULED";
+    } else if (decision.action === "schedule_voice_recovery") {
+      recoveryCase.state = "VOICE_SCHEDULED";
+    } else {
+      recoveryCase.state = "WAITING_FOR_RESULT";
+    }
+    
     recordActivity({
       caseId,
       eventId: recoveryCase.eventId,
@@ -670,7 +698,7 @@ export function processRecoveryCase(caseId: string, requestedAction?: ActionType
         type: "action",
       });
 
-      if (["customer_notification", "hinglish_voice_call"].includes(followUpDecision.action)) {
+      if (["customer_notification", "hinglish_voice_call", "execute_voice_recovery"].includes(followUpDecision.action)) {
         recoveryCase.customerContacts++;
       }
       if (["immediate_retry", "delayed_retry"].includes(followUpDecision.action)) {
@@ -745,6 +773,18 @@ export function processRecoveryCase(caseId: string, requestedAction?: ActionType
         type: "stop",
       });
     }
+  }
+
+  // Handle Escalation after 3 failures
+  if (recoveryCase.totalAttempts >= 3 && !["RECOVERED", "STOPPED", "ESCALATED"].includes(recoveryCase.state)) {
+      recoveryCase.state = "ESCALATED";
+      recoveryCase.resolvedAt = new Date().toISOString();
+      recordActivity({
+        caseId,
+        eventId: recoveryCase.eventId,
+        message: `Escalated: Max attempts (3) reached.`,
+        type: "stop",
+      });
   }
 
   // Final audit

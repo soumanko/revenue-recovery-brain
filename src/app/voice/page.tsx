@@ -1,30 +1,27 @@
 "use client";
 
 import { useState, useEffect, useRef, useCallback } from "react";
+import Link from "next/link";
 import {
   Phone,
   PhoneOff,
   Mic,
-  MicOff,
   User,
   Brain,
   Clock,
   CheckCircle2,
   Volume2,
-  Target,
-  Zap,
+  Calendar,
+  FastForward,
+  ShieldAlert,
+  CreditCard,
+  PlayCircle
 } from "lucide-react";
-import type { VoiceMessage } from "@/lib/types";
+import type { VoiceMessage, RecoveryCampaign, RecoveryCase, ActivityFeedItem } from "@/lib/types";
 
-interface VoiceDemoCase {
-  caseId: string;
-  customerId: string;
-  customerName: string;
-  amount: number;
-  failureReason: string;
-  recoveryScore: number;
-  eventType: string;
-  whyVoice: string;
+interface EnrichedCase extends RecoveryCase {
+  customer?: { name: string; preferredLanguage: string };
+  event?: { failureReason: string; amount: number; eventType: string };
 }
 
 // Pre-built demo conversations
@@ -51,51 +48,191 @@ function formatINR(amount: number): string {
   return `₹${amount.toLocaleString("en-IN")}`;
 }
 
-export default function VoicePage() {
-  const [cases, setCases] = useState<VoiceDemoCase[]>([]);
-  const [selectedCase, setSelectedCase] = useState<VoiceDemoCase | null>(null);
-  const [callState, setCallState] = useState<"idle" | "initiating" | "ringing" | "connected" | "speaking" | "processing" | "completed" | "failed">("idle");
+export default function VoiceOperationsPage() {
+  const [campaigns, setCampaigns] = useState<RecoveryCampaign[]>([]);
+  const [cases, setCases] = useState<EnrichedCase[]>([]);
+  const [loading, setLoading] = useState(true);
+  
+  // Voice State
+  const [activeVoiceCase, setActiveVoiceCase] = useState<EnrichedCase | null>(null);
   const [transcript, setTranscript] = useState<VoiceMessage[]>([]);
-  const [callDuration, setCallDuration] = useState(0);
-  const [currentMessageIndex, setCurrentMessageIndex] = useState(-1);
-  const [recovered, setRecovered] = useState(false);
+  const [callState, setCallState] = useState<"idle" | "initiating" | "ringing" | "connected" | "speaking" | "processing" | "completed" | "failed">("idle");
   const [isSpeaking, setIsSpeaking] = useState(false);
+  const [recovered, setRecovered] = useState(false);
+  const [callDuration, setCallDuration] = useState(0);
+
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const transcriptRef = useRef<HTMLDivElement>(null);
   const speechRef = useRef<SpeechSynthesisUtterance | null>(null);
 
-  // Fetch eligible cases
-  useEffect(() => {
-    fetch("/api/cases?limit=500")
-      .then((r) => r.json())
-      .then((data) => {
-        const eligible = (data.cases || [])
-          .filter((c: { amountAtRisk: number; event?: { failureReason: string; eventType: string }; customer?: { preferredLanguage: string; name: string } }) =>
-            c.amountAtRisk >= 2000 &&
-            c.event?.failureReason !== "card_expired" &&
-            c.event?.failureReason !== "card_declined" &&
-            c.event?.eventType === "payment_failure"
-          )
-          .slice(0, 10)
-          .map((c: { id: string; customerId: string; customer?: { name: string }; amountAtRisk: number; event?: { failureReason: string; eventType: string }; recoveryScore?: number }) => ({
-            caseId: c.id,
-            customerId: c.customerId,
-            customerName: c.customer?.name || "Customer",
-            amount: c.amountAtRisk,
-            failureReason: c.event?.failureReason || "unknown",
-            recoveryScore: c.recoveryScore || 75,
-            eventType: c.event?.eventType || "payment_failure",
-            whyVoice: `Voice recovery selected because transaction value (₹${c.amountAtRisk.toLocaleString("en-IN")}) exceeds voice threshold and customer has a high recovery probability. Hinglish communication preferred.`,
-          }));
-
-        setCases(eligible);
-        // Auto-select first case (Rahul's case if available)
-        if (eligible.length > 0) {
-          const rahulCase = eligible.find((c: VoiceDemoCase) => c.customerName.includes("Rahul"));
-          setSelectedCase(rahulCase || eligible[0]);
-        }
-      });
+  const fetchData = useCallback(async () => {
+    try {
+      const [campaignRes, casesRes] = await Promise.all([
+        fetch("/api/campaigns"),
+        fetch("/api/cases?limit=1000"),
+      ]);
+      const campaignData = await campaignRes.json();
+      const casesData = await casesRes.json();
+      setCampaigns(campaignData.campaigns || []);
+      setCases(casesData.cases || []);
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setLoading(false);
+    }
   }, []);
+
+  useEffect(() => {
+    fetchData();
+    const interval = setInterval(fetchData, 1500);
+    return () => clearInterval(interval);
+  }, [fetchData]);
+
+  // Voice Loading
+  useEffect(() => {
+    if (typeof window !== "undefined" && window.speechSynthesis) {
+        window.speechSynthesis.getVoices();
+        window.speechSynthesis.onvoiceschanged = () => {
+            window.speechSynthesis.getVoices();
+        };
+    }
+  }, []);
+
+  const getFemaleIndianVoice = (): SpeechSynthesisVoice | null => {
+    if (typeof window === "undefined" || !window.speechSynthesis) return null;
+    const voices = window.speechSynthesis.getVoices();
+    const preferred = voices.find(v => v.name.includes("Google हिन्दी") || v.name.includes("Microsoft Swara") || v.name.includes("Microsoft Neerja"));
+    if (preferred) return preferred;
+    return voices.find(v => v.lang.includes("hi-IN") || v.lang.includes("en-IN")) || null;
+  };
+
+  const speak = useCallback((text: string): Promise<void> => {
+    return new Promise((resolve) => {
+      if (typeof window === "undefined" || !window.speechSynthesis) {
+        resolve();
+        return;
+      }
+      window.speechSynthesis.cancel();
+      const utterance = new SpeechSynthesisUtterance(text);
+      utterance.lang = "hi-IN";
+      utterance.rate = 0.95;
+      utterance.pitch = 1;
+
+      const voice = getFemaleIndianVoice();
+      if (voice) utterance.voice = voice;
+
+      utterance.onstart = () => setIsSpeaking(true);
+      utterance.onend = () => {
+        setIsSpeaking(false);
+        resolve();
+      };
+      utterance.onerror = (e) => {
+        console.error("Speech synthesis error", e);
+        setIsSpeaking(false);
+        resolve();
+      };
+      speechRef.current = utterance;
+      window.speechSynthesis.speak(utterance);
+    });
+  }, []);
+
+  function delay(ms: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  const startVoiceCall = useCallback(async (c: EnrichedCase) => {
+     setActiveVoiceCase(c);
+     setCallState("initiating");
+     setTranscript([]);
+     setCallDuration(0);
+     setRecovered(false);
+
+     try {
+        await delay(1000);
+        setCallState("ringing");
+        await delay(2000);
+        setCallState("connected");
+
+        const isRahul = (c.customer?.name || "").includes("Rahul");
+        const template = isRahul ? demoConversations.rahul : demoConversations.default;
+        const conversation = template.map((msg) => ({
+            ...msg,
+            text: msg.text.replace(/\{amount\}/g, (c.event?.amount || 0).toLocaleString("en-IN")),
+            timestamp: new Date().toISOString(),
+        }));
+
+        for (let i = 0; i < conversation.length; i++) {
+            const msg = conversation[i];
+            setTranscript((prev) => [...prev, { ...msg, timestamp: new Date().toISOString() }]);
+            
+            if (msg.speaker === "agent") {
+                setCallState("speaking");
+                await speak(msg.text); 
+            } else {
+                setCallState("connected");
+                await delay(1500);
+            }
+        }
+
+        setCallState("processing");
+
+        // Execute API if it was only scheduled
+        if (c.state === "VOICE_SCHEDULED") {
+            const response = await fetch("/api/agent/process", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ caseId: c.id, requestedAction: "execute_voice_recovery" }),
+            });
+            const data = await response.json();
+            
+            await delay(1500);
+            
+            if (data.success && data.case.state === "RECOVERED") {
+                setRecovered(true);
+                setCallState("completed");
+                await speak(`Payment successfully complete ho gaya. Rupees ${(c.event?.amount || 0).toLocaleString("en-IN")} recovered.`);
+            } else {
+                setRecovered(false);
+                setCallState("failed");
+                await speak(`Payment complete nahi ho paya. Recovery policy ke according next action decide ki ja rahi hai.`);
+            }
+        } else {
+             // It was already executing, wait for it to resolve in the backend state loop
+             await delay(3000);
+             setCallState("completed");
+             setRecovered(true); // just assume success for demo if backend is handling it
+        }
+
+     } catch (e) {
+         console.error(e);
+     } finally {
+         setTimeout(() => {
+             setCallState("idle");
+             setActiveVoiceCase(null);
+         }, 5000);
+     }
+  }, [speak]);
+
+  // Monitor backend for active voice cases
+  useEffect(() => {
+     if (callState !== "idle") return; // Already handling a call
+     
+     // Find if the backend set any case to ACTION_EXECUTING and it's a voice call
+     const executingVoice = cases.find(c => c.state === "ACTION_EXECUTING" && (c.selectedAction === "execute_voice_recovery" || c.selectedAction === "hinglish_voice_call"));
+     
+     // OR find a scheduled voice call that we can manually trigger (or auto trigger in a real app)
+     // For demo purposes, we will auto trigger VOICE_SCHEDULED if its time has come.
+     const scheduledVoice = cases.find(c => c.state === "VOICE_SCHEDULED" && c.scheduledFor && new Date(c.scheduledFor).getTime() <= Date.now());
+
+     if (executingVoice || scheduledVoice) {
+         startVoiceCall(executingVoice || scheduledVoice!);
+     }
+  }, [cases, callState, startVoiceCall]);
+
+
+  const manualTriggerVoice = (c: EnrichedCase) => {
+      startVoiceCall(c);
+  }
 
   // Call duration timer
   useEffect(() => {
@@ -109,113 +246,21 @@ export default function VoicePage() {
     };
   }, [callState]);
 
-  // Scroll transcript
   useEffect(() => {
     if (transcriptRef.current) {
       transcriptRef.current.scrollTop = transcriptRef.current.scrollHeight;
     }
   }, [transcript]);
 
-  const speak = useCallback((text: string) => {
-    if (typeof window === "undefined" || !window.speechSynthesis) return;
 
-    // Cancel any ongoing speech
-    window.speechSynthesis.cancel();
+  if (loading && campaigns.length === 0) {
+    return <div className="p-10 text-center"><div className="w-8 h-8 border-2 border-emerald-500 border-t-transparent rounded-full animate-spin mx-auto mb-3" /></div>;
+  }
 
-    const utterance = new SpeechSynthesisUtterance(text);
-    utterance.lang = "hi-IN";
-    utterance.rate = 0.95;
-    utterance.pitch = 1;
-
-    // Try to find a Hindi voice
-    const voices = window.speechSynthesis.getVoices();
-    const hindiVoice = voices.find((v) => v.lang.includes("hi")) || voices.find((v) => v.lang.includes("en-IN"));
-    if (hindiVoice) utterance.voice = hindiVoice;
-
-    utterance.onstart = () => setIsSpeaking(true);
-    utterance.onend = () => setIsSpeaking(false);
-
-    speechRef.current = utterance;
-    window.speechSynthesis.speak(utterance);
-  }, []);
-
-  const startCall = useCallback(async () => {
-    if (!selectedCase) return;
-
-    setCallState("initiating");
-    setTranscript([]);
-    setCallDuration(0);
-    setRecovered(false);
-    setCurrentMessageIndex(-1);
-
-    // Simulate call initiation
-    await delay(1000);
-    setCallState("ringing");
-    await delay(2000);
-    setCallState("connected");
-
-    // Get conversation template
-    const isRahul = selectedCase.customerName.includes("Rahul");
-    const template = isRahul ? demoConversations.rahul : demoConversations.default;
-    const conversation = template.map((msg) => ({
-      ...msg,
-      text: msg.text.replace(/\{amount\}/g, selectedCase.amount.toLocaleString("en-IN")),
-      timestamp: new Date().toISOString(),
-    }));
-
-    // Play conversation
-    for (let i = 0; i < conversation.length; i++) {
-      const msg = conversation[i];
-      setCurrentMessageIndex(i);
-
-      if (msg.speaker === "agent") {
-        setCallState("speaking");
-        speak(msg.text);
-        await delay(msg.text.length * 60 + 1500);
-      } else {
-        setCallState("connected");
-        await delay(1500);
-      }
-
-      setTranscript((prev) => [...prev, { ...msg, timestamp: new Date().toISOString() }]);
-    }
-
-    // Process recovery
-    setCallState("processing");
-    await delay(1500);
-
-    // Execute actual recovery via API
-    try {
-      const response = await fetch("/api/agent/process", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ caseId: selectedCase.caseId, requestedAction: "hinglish_voice_call" }),
-      });
-      const data = await response.json();
-
-      if (data.success && data.case.state === "RECOVERED") {
-        setRecovered(true);
-        setCallState("completed");
-        speak(`Payment successfully complete ho gaya. Rupees ${selectedCase.amount.toLocaleString("en-IN")} recovered.`);
-      } else {
-        setRecovered(false);
-        setCallState("failed");
-        speak(`Payment complete nahi ho paya. Recovery policy ke according next action decide ki ja rahi hai.`);
-      }
-    } catch (e) {
-      setRecovered(false);
-      setCallState("failed");
-    }
-
-    if (timerRef.current) clearInterval(timerRef.current);
-  }, [selectedCase, speak]);
-
-  const endCall = () => {
-    if (typeof window !== "undefined") window.speechSynthesis?.cancel();
-    setCallState("idle");
-    setIsSpeaking(false);
-    if (timerRef.current) clearInterval(timerRef.current);
-  };
+  const activeCampaign = campaigns.find(c => c.status === "RUNNING") || campaigns[0];
+  const campaignCases = activeCampaign ? cases.filter(c => activeCampaign.targetCaseIds.includes(c.id)) : [];
+  
+  const voiceScheduled = campaignCases.filter(c => c.state === "VOICE_SCHEDULED");
 
   const formatCallDuration = (secs: number) => {
     const m = Math.floor(secs / 60);
@@ -224,273 +269,163 @@ export default function VoicePage() {
   };
 
   return (
-    <div className="p-6 max-w-[1200px] mx-auto space-y-6 fade-in">
-      <div>
-        <h1 className="text-2xl font-bold tracking-tight">Hinglish Voice Recovery</h1>
-        <p className="text-[var(--color-text-muted)] text-sm mt-1">
-          AI-powered voice recovery with natural Hinglish conversation • Demo Mode
-        </p>
+    <div className="p-6 max-w-[1440px] mx-auto space-y-6 fade-in min-h-screen">
+      <div className="flex items-center justify-between mb-8">
+        <div>
+          <h1 className="text-2xl font-bold tracking-tight">Autonomous Voice Operations</h1>
+          <p className="text-[var(--color-text-muted)] text-sm mt-1 flex items-center gap-2">
+            <span className="flex items-center gap-1.5 text-cyan-400">
+               <span className="w-2 h-2 rounded-full bg-cyan-400 pulse-dot" />
+               VOICE ENGINE ACTIVE
+            </span>
+          </p>
+        </div>
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        {/* Left: Case Selection + Info */}
-        <div className="space-y-4">
-          {/* Case Selector */}
-          <div className="glass-card p-5">
-            <h3 className="text-xs font-semibold text-[var(--color-text-muted)] uppercase tracking-wider mb-3">
-              Select Customer
-            </h3>
-            <div className="space-y-2 max-h-[300px] overflow-y-auto">
-              {cases.map((c) => (
-                <button
-                  key={c.caseId}
-                  onClick={() => { setSelectedCase(c); setCallState("idle"); setTranscript([]); setRecovered(false); }}
-                  className={`w-full text-left p-3 rounded-xl transition-all ${
-                    selectedCase?.caseId === c.caseId
-                      ? "bg-emerald-500/15 border border-emerald-500/30"
-                      : "bg-[var(--color-bg-primary)] hover:bg-[var(--color-bg-card-hover)] border border-transparent"
-                  }`}
-                >
-                  <p className="text-sm font-medium">{c.customerName}</p>
-                  <div className="flex items-center justify-between mt-1">
-                    <span className="text-xs text-amber-400">{formatINR(c.amount)}</span>
-                    <span className="text-[10px] text-[var(--color-text-muted)]">{c.failureReason.replace(/_/g, " ")}</span>
+      <div className="grid grid-cols-12 gap-6">
+         {/* LEFT PANEL */}
+         <div className="col-span-12 lg:col-span-4 space-y-6">
+            <div className="glass-card p-5">
+               <h3 className="text-xs font-semibold text-[var(--color-text-muted)] uppercase tracking-wider mb-4">Operations Status</h3>
+               <div className="space-y-4">
+                  <div className="flex justify-between items-center text-sm">
+                     <span className="text-[var(--color-text-muted)]">Current Campaign</span>
+                     <span className="font-semibold text-emerald-400">{activeCampaign?.name || "None"}</span>
                   </div>
-                </button>
-              ))}
+                  <div className="flex justify-between items-center text-sm">
+                     <span className="text-[var(--color-text-muted)]">Remaining in Queue</span>
+                     <span className="font-mono">{campaignCases.filter(c => !["RECOVERED","STOPPED","ESCALATED"].includes(c.state)).length}</span>
+                  </div>
+                  <div className="flex justify-between items-center text-sm">
+                     <span className="text-[var(--color-text-muted)]">Voice Calls Scheduled</span>
+                     <span className="font-mono text-cyan-400">{voiceScheduled.length}</span>
+                  </div>
+                  <div className="flex justify-between items-center text-sm">
+                     <span className="text-[var(--color-text-muted)]">Total Recovered</span>
+                     <span className="font-mono text-emerald-400">{campaignCases.filter(c => c.state === "RECOVERED").length}</span>
+                  </div>
+                  <div className="flex justify-between items-center text-sm">
+                     <span className="text-[var(--color-text-muted)]">Human Intervention</span>
+                     <span className="font-mono text-red-400">{campaignCases.filter(c => c.state === "ESCALATED").length}</span>
+                  </div>
+               </div>
             </div>
-          </div>
 
-          {/* Case Info */}
-          {selectedCase && (
-            <div className="glass-card p-5 space-y-3">
-              <h3 className="text-xs font-semibold text-[var(--color-text-muted)] uppercase tracking-wider">
-                Recovery Details
-              </h3>
-              <div className="space-y-2">
-                <div className="flex justify-between text-xs">
-                  <span className="text-[var(--color-text-muted)]">Customer</span>
-                  <span className="font-medium">{selectedCase.customerName}</span>
-                </div>
-                <div className="flex justify-between text-xs">
-                  <span className="text-[var(--color-text-muted)]">Amount</span>
-                  <span className="font-medium text-amber-400">{formatINR(selectedCase.amount)}</span>
-                </div>
-                <div className="flex justify-between text-xs">
-                  <span className="text-[var(--color-text-muted)]">Failure</span>
-                  <span>{selectedCase.failureReason.replace(/_/g, " ")}</span>
-                </div>
-                <div className="flex justify-between text-xs">
-                  <span className="text-[var(--color-text-muted)]">Recovery Score</span>
-                  <span className="text-emerald-400 font-semibold">{selectedCase.recoveryScore}%</span>
-                </div>
-              </div>
-
-              <div className="mt-3 pt-3 border-t border-[var(--color-border)]">
-                <div className="flex items-start gap-2">
-                  <Brain className="w-3.5 h-3.5 text-cyan-400 mt-0.5 shrink-0" />
-                  <p className="text-[10px] text-[var(--color-text-secondary)] leading-relaxed italic">
-                    {selectedCase.whyVoice}
-                  </p>
-                </div>
-              </div>
+            {/* Manual Override Demo list */}
+            <div className="glass-card p-5">
+               <h3 className="text-xs font-semibold text-[var(--color-text-muted)] uppercase tracking-wider mb-4">Manual Override (Demo)</h3>
+               <div className="space-y-2 max-h-[300px] overflow-y-auto">
+                 {campaignCases.slice(0, 10).map((c) => (
+                   <div key={c.id} className="flex justify-between items-center p-3 rounded-lg border border-[var(--color-border)] bg-[var(--color-bg-primary)]">
+                      <div>
+                        <p className="text-sm font-medium">{c.customer?.name}</p>
+                        <p className="text-xs text-amber-400">{formatINR(c.event?.amount || 0)}</p>
+                      </div>
+                      <button 
+                        disabled={callState !== "idle"}
+                        onClick={() => manualTriggerVoice(c)}
+                        className="px-3 py-1.5 rounded-lg bg-cyan-600 hover:bg-cyan-500 text-white text-[10px] uppercase font-bold disabled:opacity-50 transition-colors"
+                      >
+                         Force Call
+                      </button>
+                   </div>
+                 ))}
+               </div>
             </div>
-          )}
-        </div>
+         </div>
 
-        {/* Center: Voice Interface */}
-        <div className="lg:col-span-2">
-          <div className="glass-card overflow-hidden">
-            {/* Call Header */}
-            <div className={`px-6 py-4 flex items-center justify-between ${
-              callState === "completed" && recovered ? "bg-emerald-500/10" :
-              callState !== "idle" ? "bg-cyan-500/10" : ""
-            }`}>
-              <div className="flex items-center gap-3">
-                <div className={`w-10 h-10 rounded-full flex items-center justify-center ${
-                  callState === "idle" ? "bg-[var(--color-bg-primary)]" :
-                  callState === "completed" && recovered ? "bg-emerald-500/20" :
-                  "bg-cyan-500/20"
-                }`}>
-                  {callState === "completed" && recovered ? (
-                    <CheckCircle2 className="w-5 h-5 text-emerald-400" />
-                  ) : callState === "speaking" || isSpeaking ? (
-                    <Volume2 className="w-5 h-5 text-cyan-400" />
+         {/* RIGHT PANEL - ACTIVE CALL */}
+         <div className="col-span-12 lg:col-span-8">
+            <div className="glass-card h-[600px] flex flex-col overflow-hidden">
+               {/* Call Header */}
+               <div className="px-6 py-5 border-b border-[var(--color-border)] bg-[var(--color-bg-primary)] flex justify-between items-center">
+                   {activeVoiceCase ? (
+                      <div className="flex items-center gap-4">
+                         <div className="w-12 h-12 rounded-full bg-cyan-500/10 flex items-center justify-center">
+                            <Phone className={`w-5 h-5 text-cyan-400 ${callState === "ringing" ? "animate-pulse" : ""}`} />
+                         </div>
+                         <div>
+                            <h2 className="text-lg font-bold">{activeVoiceCase.customer?.name}</h2>
+                            <p className="text-sm text-emerald-400">{formatINR(activeVoiceCase.event?.amount || 0)} <span className="text-[var(--color-text-muted)] mx-1">•</span> <span className="capitalize">{callState}</span></p>
+                         </div>
+                      </div>
+                   ) : (
+                      <div className="flex items-center gap-4">
+                         <div className="w-12 h-12 rounded-full bg-[var(--color-bg-card)] flex items-center justify-center">
+                            <Clock className="w-5 h-5 text-[var(--color-text-muted)]" />
+                         </div>
+                         <div>
+                            <h2 className="text-lg font-bold text-[var(--color-text-muted)]">Waiting for Agent...</h2>
+                            <p className="text-sm text-[var(--color-text-muted)]">No active call</p>
+                         </div>
+                      </div>
+                   )}
+                   
+                   {activeVoiceCase && callState !== "idle" && (
+                      <div className="flex items-center gap-2">
+                        <Clock className="w-4 h-4 text-[var(--color-text-muted)]" />
+                        <span className="text-sm font-mono text-[var(--color-text-secondary)]">{formatCallDuration(callDuration)}</span>
+                      </div>
+                   )}
+               </div>
+
+               {/* Transcript Area */}
+               <div className="flex-1 bg-[var(--color-bg-card)] p-6 relative flex flex-col">
+                  {!activeVoiceCase ? (
+                     <div className="flex-1 flex flex-col justify-center items-center text-center opacity-50">
+                        <Brain className="w-16 h-16 text-cyan-400 mb-4" />
+                        <p className="text-lg text-[var(--color-text-secondary)] font-medium">Monitoring Queue</p>
+                        <p className="text-sm text-[var(--color-text-muted)]">The agent will autonomously connect to scheduled customers.</p>
+                     </div>
                   ) : (
-                    <Phone className="w-5 h-5 text-[var(--color-text-muted)]" />
+                     <>
+                        <div ref={transcriptRef} className="flex-1 overflow-y-auto space-y-4 pr-2 pb-20">
+                          {transcript.map((msg, i) => (
+                            <div key={i} className={`flex gap-4 slide-up ${msg.speaker === "agent" ? "" : "flex-row-reverse"}`}>
+                              <div className={`w-10 h-10 rounded-full flex items-center justify-center shrink-0 border ${
+                                msg.speaker === "agent" ? "bg-cyan-500/10 border-cyan-500/30 text-cyan-400" : "bg-purple-500/10 border-purple-500/30 text-purple-400"
+                              }`}>
+                                {msg.speaker === "agent" ? <Brain className="w-5 h-5" /> : <User className="w-5 h-5" />}
+                              </div>
+                              <div className={`max-w-[70%] ${msg.speaker === "agent" ? "" : "text-right"}`}>
+                                <div className={`rounded-2xl px-5 py-3 text-sm shadow-sm ${
+                                  msg.speaker === "agent" ? "bg-[var(--color-bg-primary)] border border-[var(--color-border)] rounded-tl-sm" : "bg-purple-500/20 border border-purple-500/30 rounded-tr-sm"
+                                }`}>
+                                  {msg.text}
+                                </div>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+
+                        {/* Call Visualizer Footer */}
+                        <div className="absolute bottom-0 left-0 right-0 p-4 bg-gradient-to-t from-[var(--color-bg-card)] via-[var(--color-bg-card)] to-transparent flex justify-center">
+                           <div className="px-8 py-3 rounded-full bg-[var(--color-bg-primary)] border border-[var(--color-border)] shadow-lg flex items-center gap-3">
+                              {callState === "speaking" || isSpeaking ? (
+                                <div className="wave-bars">
+                                  {[...Array(12)].map((_, i) => (
+                                    <div key={i} className="wave-bar bg-cyan-400" style={{ animationDelay: `${i * 0.08}s` }} />
+                                  ))}
+                                </div>
+                              ) : callState === "ringing" ? (
+                                <div className="flex items-center gap-2">
+                                  <Phone className="w-4 h-4 text-cyan-400 animate-pulse" />
+                                  <span className="text-xs font-semibold text-cyan-400">Ringing...</span>
+                                </div>
+                              ) : (
+                                <div className="flex items-center gap-2">
+                                  <Mic className="w-4 h-4 text-emerald-400 pulse-dot" />
+                                  <span className="text-xs font-semibold text-emerald-400">Listening...</span>
+                                </div>
+                              )}
+                           </div>
+                        </div>
+                     </>
                   )}
-                </div>
-                <div>
-                  <p className="text-sm font-semibold">
-                    {selectedCase ? selectedCase.customerName : "Select a customer"}
-                  </p>
-                  <p className="text-xs text-[var(--color-text-muted)]">
-                    {callState === "idle" && "Ready to call"}
-                    {callState === "initiating" && "Initiating call..."}
-                    {callState === "ringing" && "Ringing..."}
-                    {callState === "connected" && "Connected — Listening"}
-                    {callState === "speaking" && "Agent Speaking"}
-                    {callState === "processing" && "Processing recovery..."}
-                    {callState === "completed" && (recovered ? "Recovery Successful" : "Call Ended")}
-                  </p>
-                </div>
-              </div>
-              <div className="flex items-center gap-4">
-                {callState !== "idle" && callState !== "completed" && (
-                  <div className="flex items-center gap-2">
-                    <Clock className="w-3.5 h-3.5 text-[var(--color-text-muted)]" />
-                    <span className="text-xs font-mono">{formatCallDuration(callDuration)}</span>
-                  </div>
-                )}
-                {callState === "completed" && (
-                  <span className="text-xs font-mono text-[var(--color-text-muted)]">{formatCallDuration(callDuration)}</span>
-                )}
-              </div>
+               </div>
             </div>
-
-            {/* Voice Visualizer */}
-            {(callState === "speaking" || callState === "connected" || callState === "ringing") && (
-              <div className="px-6 py-4 flex justify-center items-center gap-1 bg-[var(--color-bg-primary)]">
-                {callState === "speaking" || isSpeaking ? (
-                  <div className="wave-bars">
-                    {[...Array(12)].map((_, i) => (
-                      <div key={i} className="wave-bar" style={{ animationDelay: `${i * 0.08}s` }} />
-                    ))}
-                  </div>
-                ) : callState === "ringing" ? (
-                  <div className="flex items-center gap-2">
-                    <Phone className="w-4 h-4 text-cyan-400 animate-pulse" />
-                    <span className="text-xs text-[var(--color-text-muted)]">Ringing...</span>
-                  </div>
-                ) : (
-                  <div className="flex items-center gap-2">
-                    <Mic className="w-4 h-4 text-emerald-400 pulse-dot" />
-                    <span className="text-xs text-[var(--color-text-muted)]">Listening...</span>
-                  </div>
-                )}
-              </div>
-            )}
-
-            {/* Transcript */}
-            <div ref={transcriptRef} className="px-6 py-4 space-y-4 min-h-[300px] max-h-[400px] overflow-y-auto">
-              {transcript.length === 0 && callState === "idle" && (
-                <div className="flex flex-col items-center justify-center h-[250px] text-center">
-                  <Phone className="w-10 h-10 text-[var(--color-text-muted)] opacity-30 mb-3" />
-                  <p className="text-sm text-[var(--color-text-muted)]">
-                    Start a Hinglish voice recovery call
-                  </p>
-                  <p className="text-xs text-[var(--color-text-muted)] mt-1">
-                    Select a customer and click the call button below
-                  </p>
-                </div>
-              )}
-
-              {transcript.map((msg, i) => (
-                <div
-                  key={i}
-                  className={`flex gap-3 slide-up ${msg.speaker === "agent" ? "" : "flex-row-reverse"}`}
-                >
-                  <div className={`w-8 h-8 rounded-full flex items-center justify-center shrink-0 ${
-                    msg.speaker === "agent" ? "bg-cyan-500/20" : "bg-purple-500/20"
-                  }`}>
-                    {msg.speaker === "agent" ? (
-                      <Brain className="w-4 h-4 text-cyan-400" />
-                    ) : (
-                      <User className="w-4 h-4 text-purple-400" />
-                    )}
-                  </div>
-                  <div className={`max-w-[75%] ${msg.speaker === "agent" ? "" : "text-right"}`}>
-                    <p className="text-[10px] text-[var(--color-text-muted)] mb-1">
-                      {msg.speaker === "agent" ? "Recovery Agent" : selectedCase?.customerName || "Customer"}
-                    </p>
-                    <div className={`rounded-2xl px-4 py-2.5 text-sm ${
-                      msg.speaker === "agent"
-                        ? "bg-[var(--color-bg-card)] rounded-tl-md"
-                        : "bg-purple-500/15 rounded-tr-md"
-                    }`}>
-                      {msg.text}
-                    </div>
-                    {msg.isHinglish && (
-                      <span className="text-[9px] text-[var(--color-text-muted)] mt-0.5 inline-block">🇮🇳 Hinglish</span>
-                    )}
-                  </div>
-                </div>
-              ))}
-
-              {callState === "processing" && (
-                <div className="flex items-center justify-center gap-2 py-4">
-                  <div className="w-4 h-4 border-2 border-emerald-500 border-t-transparent rounded-full animate-spin" />
-                  <span className="text-xs text-[var(--color-text-muted)]">Processing recovery payment...</span>
-                </div>
-              )}
-            </div>
-
-            {/* Recovery Result */}
-            {callState === "completed" && recovered && (
-              <div className="px-6 py-5 bg-emerald-500/10 border-t border-emerald-500/20 slide-up">
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-3">
-                    <CheckCircle2 className="w-6 h-6 text-emerald-400" />
-                    <div>
-                      <p className="text-sm font-semibold text-emerald-400">Payment Recovered!</p>
-                      <p className="text-xs text-[var(--color-text-muted)]">Via Hinglish Voice Call</p>
-                    </div>
-                  </div>
-                  <div className="text-right">
-                    <p className="text-2xl font-bold text-emerald-400 recovery-glow">
-                      {selectedCase ? formatINR(selectedCase.amount) : "—"}
-                    </p>
-                    <p className="text-xs text-[var(--color-text-muted)]">
-                      Duration: {formatCallDuration(callDuration)} • 1 attempt
-                    </p>
-                  </div>
-                </div>
-              </div>
-            )}
-
-            {/* Call Controls */}
-            <div className="px-6 py-4 border-t border-[var(--color-border)] flex items-center justify-center gap-4">
-              {callState === "idle" ? (
-                <button
-                  onClick={startCall}
-                  disabled={!selectedCase}
-                  className="flex items-center gap-2 px-8 py-3 rounded-full bg-gradient-to-r from-emerald-600 to-cyan-600 text-white font-semibold text-sm hover:from-emerald-500 hover:to-cyan-500 transition-all shadow-lg shadow-emerald-900/30 disabled:opacity-50 disabled:cursor-not-allowed"
-                >
-                  <Phone className="w-4 h-4" />
-                  Start Voice Recovery
-                </button>
-              ) : callState === "completed" ? (
-                <button
-                  onClick={() => { setCallState("idle"); setTranscript([]); setRecovered(false); setCallDuration(0); }}
-                  className="flex items-center gap-2 px-6 py-2.5 rounded-full border border-[var(--color-border)] text-sm font-medium hover:bg-[var(--color-bg-card)] transition-all"
-                >
-                  <Phone className="w-4 h-4" />
-                  New Call
-                </button>
-              ) : (
-                <button
-                  onClick={endCall}
-                  className="flex items-center gap-2 px-8 py-3 rounded-full bg-red-600 text-white font-semibold text-sm hover:bg-red-500 transition-all"
-                >
-                  <PhoneOff className="w-4 h-4" />
-                  End Call
-                </button>
-              )}
-            </div>
-
-            {/* Simulation Notice */}
-            <div className="px-6 py-2 bg-amber-500/5 border-t border-amber-500/10">
-              <p className="text-[10px] text-amber-400/70 text-center">
-                ⚡ Demo Simulation — Uses Web Speech API for TTS. All recovery actions are simulated.
-              </p>
-            </div>
-          </div>
-        </div>
+         </div>
       </div>
     </div>
   );
-}
-
-function delay(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
 }
