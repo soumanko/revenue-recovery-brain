@@ -67,6 +67,8 @@ const activityTypeIcons: Record<string, typeof Activity> = {
   result: ArrowRight,
   recovery: CheckCircle2,
   stop: XCircle,
+  human_takeover: ShieldAlert,
+  human_resolve: CheckCircle2,
 };
 
 const activityTypeColors: Record<string, string> = {
@@ -77,7 +79,17 @@ const activityTypeColors: Record<string, string> = {
   result: "text-orange-400",
   recovery: "text-emerald-400",
   stop: "text-gray-400",
+  human_takeover: "text-rose-400",
+  human_resolve: "text-emerald-400",
 };
+
+const resolutionOptions = [
+  { value: "recovered_manually", label: "Recovered manually" },
+  { value: "payment_no_longer_required", label: "Payment no longer required" },
+  { value: "customer_declined_permanently", label: "Customer declined permanently" },
+  { value: "unable_to_recover", label: "Unable to recover" },
+  { value: "other", label: "Other" },
+];
 
 export default function CommandCenter() {
   const [campaigns, setCampaigns] = useState<RecoveryCampaign[]>([]);
@@ -87,7 +99,12 @@ export default function CommandCenter() {
   
   // Strategy Lab (What If) State
   const [labMaxAttempts, setLabMaxAttempts] = useState(3);
-  const [labVoiceEnabled, setLabVoiceEnabled] = useState(true);
+
+  // Resolve Modal State
+  const [resolveCase, setResolveCase] = useState<EnrichedCase | null>(null);
+  const [resolution, setResolution] = useState("recovered_manually");
+  const [resolveNote, setResolveNote] = useState("");
+  const [submitting, setSubmitting] = useState(false);
 
   const fetchData = useCallback(async () => {
     try {
@@ -117,8 +134,41 @@ export default function CommandCenter() {
   }, [fetchData]);
 
   const handleCampaignAction = async (id: string, action: "pause" | "resume" | "stop") => {
-     // Optional: Call API to pause/resume
-     // Here we just refresh data as the backend processes autonomously.
+    await fetch(`/api/campaigns/${id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action }),
+    });
+    fetchData();
+  };
+
+  const handleTakeOver = async (caseId: string) => {
+    try {
+      await fetch(`/api/cases/${caseId}/takeover`, { method: "POST" });
+      fetchData();
+    } catch (e) {
+      console.error("Takeover failed", e);
+    }
+  };
+
+  const handleResolve = async () => {
+    if (!resolveCase) return;
+    setSubmitting(true);
+    try {
+      await fetch(`/api/cases/${resolveCase.id}/resolve`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ resolution, note: resolveNote }),
+      });
+      setResolveCase(null);
+      setResolution("recovered_manually");
+      setResolveNote("");
+      fetchData();
+    } catch (e) {
+      console.error("Resolve failed", e);
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   if (loading && campaigns.length === 0) {
@@ -132,7 +182,7 @@ export default function CommandCenter() {
     );
   }
 
-  const activeCampaign = campaigns.find(c => c.status === "RUNNING") || campaigns[0];
+  const activeCampaign = campaigns.find(c => c.status === "RUNNING") || campaigns.find(c => c.status === "SCHEDULED") || campaigns[0];
   const campaignCases = activeCampaign ? cases.filter(c => activeCampaign.targetCaseIds.includes(c.id)) : [];
   
   // Live Queue Logic
@@ -140,12 +190,19 @@ export default function CommandCenter() {
   const nowCase = currentlyProcessing.length > 0 ? currentlyProcessing[0] : null;
   const nextCases = campaignCases.filter(c => ["DETECTED", "VOICE_SCHEDULED"].includes(c.state) && c.id !== nowCase?.id).sort((a,b) => (a.scheduledFor && b.scheduledFor) ? new Date(a.scheduledFor).getTime() - new Date(b.scheduledFor).getTime() : 0).slice(0, 5);
   const waitingCases = campaignCases.filter(c => c.state === "DELAYED_RETRY_SCHEDULED" && c.id !== nowCase?.id).sort((a,b) => new Date(a.nextAttemptAt || 0).getTime() - new Date(b.nextAttemptAt || 0).getTime()).slice(0, 5);
-  const escalatedCases = campaignCases.filter(c => c.state === "ESCALATED");
+  const escalatedCases = campaignCases.filter(c => c.state === "ESCALATED" || c.state === "HUMAN_CONTROLLED");
   const upcomingCases = [...nextCases, ...waitingCases].sort((a,b) => new Date(a.scheduledFor || a.nextAttemptAt || 0).getTime() - new Date(b.scheduledFor || b.nextAttemptAt || 0).getTime());
 
+  // Campaign-scoped metrics
+  const campaignAtRisk = campaignCases.reduce((sum, c) => sum + c.amountAtRisk, 0);
+  const campaignAutoRecovered = campaignCases.filter(c => c.state === "RECOVERED" && !c.isHumanRecovery).reduce((sum, c) => sum + c.amountRecovered, 0);
+  const campaignHumanRecovered = campaignCases.filter(c => c.state === "RECOVERED" && c.isHumanRecovery).reduce((sum, c) => sum + c.humanRecoveredAmount, 0);
+  const campaignTotalRecovered = campaignAutoRecovered + campaignHumanRecovered;
+  const campaignRecoveryRate = campaignAtRisk > 0 ? (campaignTotalRecovered / campaignAtRisk) * 100 : 0;
+
   // Simulation logic for Lab
-  const simRecoveryImpact = (activeCampaign?.totalRecoveredAmount || 0) * (labMaxAttempts === 3 ? 1 : 0.85);
-  const simContacts = campaignCases.reduce((sum, c) => sum + c.customerContacts, 0) * (labMaxAttempts === 3 ? 1 : 0.75);
+  const simRecoveryImpact = campaignTotalRecovered * (labMaxAttempts === 3 ? 1 : labMaxAttempts === 2 ? 0.78 : 1.12);
+  const simContacts = campaignCases.reduce((sum, c) => sum + c.customerContacts, 0) * (labMaxAttempts === 3 ? 1 : labMaxAttempts === 2 ? 0.72 : 1.3);
 
   return (
     <div className="p-6 max-w-[1600px] mx-auto space-y-6 fade-in min-h-screen">
@@ -176,7 +233,7 @@ export default function CommandCenter() {
         
         {/* LEFT COLUMN: CAMPAIGN CONTROL & IMPACT */}
         <div className="col-span-12 lg:col-span-3 space-y-6">
-          {activeCampaign && (
+          {activeCampaign ? (
             <div className="glass-card p-5 relative overflow-hidden group">
               <div className="absolute top-0 right-0 p-4 opacity-10 group-hover:opacity-20 transition-opacity">
                 <Brain className="w-24 h-24" />
@@ -184,7 +241,9 @@ export default function CommandCenter() {
               <h3 className="text-xs font-semibold text-[var(--color-text-muted)] uppercase tracking-wider mb-4">
                 Campaign Control Center
               </h3>
-              <p className="text-lg font-semibold">{activeCampaign.name}</p>
+              <Link href={`/campaigns/${activeCampaign.id}`} className="text-lg font-semibold hover:text-cyan-400 transition-colors">
+                {activeCampaign.name}
+              </Link>
               
               <div className="mt-4 space-y-3">
                 <div className="flex justify-between items-center text-sm">
@@ -207,23 +266,53 @@ export default function CommandCenter() {
 
               <div className="mt-6 grid grid-cols-2 gap-4">
                  <div>
-                   <p className="text-[10px] uppercase text-[var(--color-text-muted)] font-semibold">At Risk</p>
-                   <p className="text-lg font-bold text-amber-400">{formatINR(activeCampaign.totalTargetAmount)}</p>
+                   <p className="text-[10px] uppercase text-[var(--color-text-muted)] font-semibold">This Campaign — At Risk</p>
+                   <p className="text-lg font-bold text-amber-400">{formatINR(campaignAtRisk)}</p>
                  </div>
                  <div>
-                   <p className="text-[10px] uppercase text-[var(--color-text-muted)] font-semibold">Recovered</p>
-                   <p className="text-lg font-bold text-emerald-400 recovery-glow">{formatINR(activeCampaign.totalRecoveredAmount)}</p>
+                   <p className="text-[10px] uppercase text-[var(--color-text-muted)] font-semibold">This Campaign — Recovered</p>
+                   <p className="text-lg font-bold text-emerald-400 recovery-glow">{formatINR(campaignTotalRecovered)}</p>
+                   {campaignHumanRecovered > 0 && (
+                     <p className="text-[10px] text-[var(--color-text-muted)]">
+                       Auto: {formatINR(campaignAutoRecovered)} · Human: {formatINR(campaignHumanRecovered)}
+                     </p>
+                   )}
                  </div>
               </div>
 
-              <div className="mt-6 flex gap-2">
-                 <button onClick={() => handleCampaignAction(activeCampaign.id, "pause")} className="flex-1 flex justify-center items-center gap-1.5 p-2 bg-[var(--color-bg-primary)] hover:bg-[var(--color-bg-card-hover)] rounded-lg text-sm text-[var(--color-text-secondary)] transition-colors">
-                    <PauseCircle className="w-4 h-4"/> Pause
-                 </button>
-                 <button onClick={() => handleCampaignAction(activeCampaign.id, "stop")} className="flex-1 flex justify-center items-center gap-1.5 p-2 bg-[var(--color-bg-primary)] hover:bg-[var(--color-bg-card-hover)] rounded-lg text-sm text-red-400 transition-colors">
-                    <StopCircle className="w-4 h-4"/> Stop
-                 </button>
+              <div className="mt-4">
+                <p className="text-[10px] uppercase text-[var(--color-text-muted)] font-semibold">Recovery Rate</p>
+                <p className="text-2xl font-bold text-cyan-400">{campaignRecoveryRate.toFixed(1)}%</p>
+                <p className="text-[10px] text-[var(--color-text-muted)]">of {formatINR(campaignAtRisk)} at risk</p>
               </div>
+
+              <div className="mt-6 flex gap-2">
+                 {activeCampaign.status === "RUNNING" && (
+                   <>
+                     <button onClick={() => handleCampaignAction(activeCampaign.id, "pause")} className="flex-1 flex justify-center items-center gap-1.5 p-2 bg-[var(--color-bg-primary)] hover:bg-[var(--color-bg-card-hover)] rounded-lg text-sm text-[var(--color-text-secondary)] transition-colors">
+                        <PauseCircle className="w-4 h-4"/> Pause
+                     </button>
+                     <button onClick={() => handleCampaignAction(activeCampaign.id, "stop")} className="flex-1 flex justify-center items-center gap-1.5 p-2 bg-[var(--color-bg-primary)] hover:bg-[var(--color-bg-card-hover)] rounded-lg text-sm text-red-400 transition-colors">
+                        <StopCircle className="w-4 h-4"/> Stop
+                     </button>
+                   </>
+                 )}
+                 {activeCampaign.status === "PAUSED" && (
+                   <button onClick={() => handleCampaignAction(activeCampaign.id, "resume")} className="flex-1 flex justify-center items-center gap-1.5 p-2 bg-emerald-500/10 hover:bg-emerald-500/20 rounded-lg text-sm text-emerald-400 transition-colors">
+                      <PlayCircle className="w-4 h-4"/> Resume
+                   </button>
+                 )}
+              </div>
+            </div>
+          ) : (
+            <div className="glass-card p-8 text-center">
+              <Calendar className="w-10 h-10 text-[var(--color-text-muted)] mx-auto mb-3 opacity-40" />
+              <h3 className="text-sm font-semibold mb-2">No Active Campaign</h3>
+              <p className="text-xs text-[var(--color-text-muted)] mb-4">Create a campaign to start autonomous recovery.</p>
+              <Link href="/campaigns/new" className="inline-flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold bg-gradient-to-r from-emerald-600 to-cyan-600 text-white">
+                <Zap className="w-4 h-4" />
+                Create Campaign
+              </Link>
             </div>
           )}
 
@@ -239,7 +328,7 @@ export default function CommandCenter() {
                    </div>
                    <span className="text-sm font-medium">Customers Recovered</span>
                 </div>
-                <span className="font-bold text-emerald-400">{activeCampaign?.recoveredCaseIds.length || 0}</span>
+                <span className="font-bold text-emerald-400">{campaignCases.filter(c => c.state === "RECOVERED").length}</span>
               </div>
               
               <div className="flex justify-between items-center">
@@ -249,7 +338,7 @@ export default function CommandCenter() {
                    </div>
                    <span className="text-sm font-medium">Voice Recoveries</span>
                 </div>
-                <span className="font-bold text-cyan-400">{campaignCases.filter(c => c.recoveryChannel === "hinglish_voice_call" || c.recoveryChannel === "execute_voice_recovery").length}</span>
+                <span className="font-bold text-cyan-400">{campaignCases.filter(c => c.recoveryChannel && (c.recoveryChannel.includes("voice") || c.recoveryChannel.includes("hinglish"))).length}</span>
               </div>
               
               <div className="flex justify-between items-center">
@@ -257,9 +346,9 @@ export default function CommandCenter() {
                    <div className="w-8 h-8 rounded-full bg-purple-500/10 flex items-center justify-center">
                      <Zap className="w-4 h-4 text-purple-400"/>
                    </div>
-                   <span className="text-sm font-medium">Retries Executed</span>
+                   <span className="text-sm font-medium">Auto Retries</span>
                 </div>
-                <span className="font-bold text-purple-400">{campaignCases.filter(c => c.recoveryChannel === "immediate_retry" || c.recoveryChannel === "delayed_retry").length}</span>
+                <span className="font-bold text-purple-400">{campaignCases.filter(c => c.recoveryChannel && (c.recoveryChannel.includes("retry"))).length}</span>
               </div>
 
               <div className="flex justify-between items-center">
@@ -267,10 +356,10 @@ export default function CommandCenter() {
                    <div className="w-8 h-8 rounded-full bg-amber-500/10 flex items-center justify-center">
                      <ShieldAlert className="w-4 h-4 text-amber-400"/>
                    </div>
-                   <span className="text-sm font-medium">Escalations Avoided</span>
+                   <span className="text-sm font-medium">Escalated</span>
                 </div>
                 <span className="font-bold text-amber-400">
-                   {campaignCases.filter(c => c.state === "RECOVERED" && c.totalAttempts > 0).length}
+                   {escalatedCases.length}
                 </span>
               </div>
             </div>
@@ -330,7 +419,7 @@ export default function CommandCenter() {
                 </div>
               ) : (
                 <div className="p-4 rounded-xl border border-[var(--color-border)] bg-[var(--color-bg-primary)] text-center text-[var(--color-text-muted)] text-sm">
-                  Agent is idle. Waiting for scheduled tasks.
+                  {activeCampaign ? "Agent is idle. Waiting for scheduled tasks." : "No active campaign. Create one to start recovery."}
                 </div>
               )}
             </div>
@@ -369,7 +458,10 @@ export default function CommandCenter() {
                    <ShieldAlert className="w-4 h-4" />
                    Human Intervention Required
                 </h3>
-                <span className="px-2 py-0.5 rounded bg-red-500/10 text-red-400 text-xs font-bold">{escalatedCases.length}</span>
+                <div className="flex items-center gap-2">
+                  <span className="px-2 py-0.5 rounded bg-red-500/10 text-red-400 text-xs font-bold">{escalatedCases.length}</span>
+                  <Link href="/human-intervention" className="text-[10px] text-cyan-400 hover:underline">View All</Link>
+                </div>
              </div>
              <div className="space-y-3 max-h-[200px] overflow-y-auto">
                 {escalatedCases.map(c => (
@@ -379,11 +471,25 @@ export default function CommandCenter() {
                           <Link href={`/cases/${c.id}`} className="text-sm font-medium hover:text-cyan-400">{c.customer?.name}</Link>
                           <p className="text-xs text-amber-400">{formatINR(c.event?.amount || 0)}</p>
                         </div>
-                        <span className="text-[10px] px-1.5 py-0.5 bg-red-500/20 text-red-400 rounded">3/3 Exhausted</span>
+                        <span className="text-[10px] px-1.5 py-0.5 bg-red-500/20 text-red-400 rounded">
+                          {c.state === "HUMAN_CONTROLLED" ? "TAKEN OVER" : `${c.totalAttempts}/3 Exhausted`}
+                        </span>
                      </div>
                      <div className="flex gap-2">
-                        <button className="flex-1 py-1.5 bg-cyan-600 hover:bg-cyan-500 text-white text-[10px] rounded transition-colors">Take Over</button>
-                        <button className="flex-1 py-1.5 bg-[var(--color-bg-card)] hover:bg-[var(--color-bg-card-hover)] text-emerald-400 text-[10px] rounded border border-[var(--color-border)] transition-colors">Resolve</button>
+                        {c.state === "ESCALATED" && (
+                          <button 
+                            onClick={() => handleTakeOver(c.id)} 
+                            className="flex-1 py-1.5 bg-cyan-600 hover:bg-cyan-500 text-white text-[10px] font-semibold rounded transition-colors"
+                          >
+                            Take Over
+                          </button>
+                        )}
+                        <button 
+                          onClick={() => { setResolveCase(c); setResolution("recovered_manually"); setResolveNote(""); }}
+                          className="flex-1 py-1.5 bg-[var(--color-bg-card)] hover:bg-[var(--color-bg-card-hover)] text-emerald-400 text-[10px] font-semibold rounded border border-[var(--color-border)] transition-colors"
+                        >
+                          Resolve
+                        </button>
                      </div>
                   </div>
                 ))}
@@ -408,7 +514,7 @@ export default function CommandCenter() {
               {feed.length === 0 ? (
                 <p className="text-xs text-[var(--color-text-muted)] text-center py-4">No activity yet</p>
               ) : (
-                feed.map((item, index) => {
+                feed.map((item) => {
                   const Icon = activityTypeIcons[item.type] || Activity;
                   const color = activityTypeColors[item.type] || "text-gray-400";
                   return (
@@ -444,7 +550,7 @@ export default function CommandCenter() {
                  <Settings className="w-4 h-4" />
                  Recovery Strategy Lab
                </h3>
-               <span className="text-[9px] bg-purple-500/20 text-purple-400 px-1.5 py-0.5 rounded uppercase">Simulation</span>
+               <span className="text-[9px] bg-purple-500/20 text-purple-400 px-1.5 py-0.5 rounded uppercase font-bold">Simulation</span>
              </div>
              
              <div className="space-y-3">
@@ -466,7 +572,7 @@ export default function CommandCenter() {
                    <div className="flex justify-between items-center mb-1">
                       <span className="text-xs text-[var(--color-text-muted)]">Revenue recovered</span>
                       <div className="flex items-center gap-1">
-                        <span className="text-xs line-through text-[var(--color-text-muted)]">{formatINR(activeCampaign?.totalRecoveredAmount || 0)}</span>
+                        <span className="text-xs line-through text-[var(--color-text-muted)]">{formatINR(campaignTotalRecovered)}</span>
                         <ArrowRight className="w-3 h-3 text-[var(--color-text-muted)]" />
                         <span className={`text-xs font-semibold ${labMaxAttempts === 3 ? "text-[var(--color-text-secondary)]" : "text-amber-400"}`}>{formatINR(simRecoveryImpact)}</span>
                       </div>
@@ -485,6 +591,67 @@ export default function CommandCenter() {
         </div>
 
       </div>
+
+      {/* Resolve Modal */}
+      {resolveCase && (
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center fade-in">
+          <div className="glass-card p-6 w-[480px] max-w-[90vw] slide-up">
+            <h3 className="text-lg font-bold mb-1">Resolve Case</h3>
+            <p className="text-sm text-[var(--color-text-secondary)] mb-4">
+              {resolveCase.customer?.name} · {formatINR(resolveCase.event?.amount || 0)}
+            </p>
+
+            <div className="space-y-4">
+              <div>
+                <label className="text-xs font-semibold text-[var(--color-text-muted)] uppercase block mb-2">Resolution</label>
+                <div className="space-y-2">
+                  {resolutionOptions.map(opt => (
+                    <button
+                      key={opt.value}
+                      type="button"
+                      onClick={() => setResolution(opt.value)}
+                      className={`w-full text-left px-4 py-3 rounded-xl border text-sm transition-all ${
+                        resolution === opt.value
+                          ? "border-emerald-500/50 bg-emerald-500/10 text-emerald-400"
+                          : "border-[var(--color-border)] bg-[var(--color-bg-primary)] text-[var(--color-text-secondary)] hover:border-[var(--color-border-light)]"
+                      }`}
+                    >
+                      {resolution === opt.value ? "● " : "○ "}{opt.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div>
+                <label className="text-xs font-semibold text-[var(--color-text-muted)] uppercase block mb-2">Note (optional)</label>
+                <textarea
+                  value={resolveNote}
+                  onChange={(e) => setResolveNote(e.target.value)}
+                  placeholder="e.g., Payment completed through manual outreach."
+                  rows={3}
+                  className="w-full px-4 py-3 bg-[var(--color-bg-primary)] border border-[var(--color-border)] rounded-xl text-[var(--color-text-primary)] text-sm outline-none focus:border-emerald-500/50 transition-colors placeholder:text-[var(--color-text-muted)] resize-none"
+                />
+              </div>
+            </div>
+
+            <div className="flex gap-3 mt-6">
+              <button
+                onClick={() => setResolveCase(null)}
+                className="flex-1 px-4 py-3 rounded-xl text-sm font-medium bg-[var(--color-bg-card)] hover:bg-[var(--color-bg-card-hover)] text-[var(--color-text-secondary)] border border-[var(--color-border)] transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleResolve}
+                disabled={submitting}
+                className="flex-1 px-4 py-3 rounded-xl text-sm font-bold bg-gradient-to-r from-emerald-600 to-cyan-600 text-white hover:from-emerald-500 hover:to-cyan-500 transition-all disabled:opacity-50"
+              >
+                {submitting ? "Resolving..." : "Confirm Resolution"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

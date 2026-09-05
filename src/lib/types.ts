@@ -24,7 +24,8 @@ export type RecoveryState =
   | "RECOVERED"
   | "FAILED"
   | "STOPPED"
-  | "ESCALATED";
+  | "ESCALATED"
+  | "HUMAN_CONTROLLED";
 
 export type Recoverability =
   | "highly_recoverable"
@@ -42,9 +43,9 @@ export type ActionType =
   | "escalation"
   | "stop_recovery";
 
-export type ActionStatus = "pending" | "executing" | "success" | "failed" | "skipped";
+export type ActionStatus = "pending" | "executing" | "success" | "failed" | "skipped" | "cancelled";
 
-export type ActivityType = "detection" | "diagnosis" | "scoring" | "action" | "result" | "recovery" | "stop";
+export type ActivityType = "detection" | "diagnosis" | "scoring" | "action" | "result" | "recovery" | "stop" | "human_takeover" | "human_resolve";
 
 // ─── Data Models ─────────────────────────────────────────────
 
@@ -84,6 +85,7 @@ export interface RecoveryCase {
   eventId: string;
   customerId: string;
   batchId?: string;
+  campaignId?: string;
   state: RecoveryState;
   recoveryScore?: number;
   recoverability?: Recoverability;
@@ -92,6 +94,8 @@ export interface RecoveryCase {
   actionReason?: string;
   totalAttempts: number;
   customerContacts: number;
+  voiceCallsToday: number;
+  voiceCallsDate?: string; // YYYY-MM-DD to track which day the count is for
   amountAtRisk: number;
   amountRecovered: number;
   recoveryChannel?: string;
@@ -103,6 +107,13 @@ export interface RecoveryCase {
   createdAt: string;
   updatedAt: string;
   resolvedAt?: string;
+  // Human intervention fields
+  humanTakeoverAt?: string;
+  humanResolvedAt?: string;
+  humanResolution?: string;
+  humanResolutionNote?: string;
+  humanRecoveredAmount: number;
+  isHumanRecovery: boolean;
 }
 
 export interface RecoveryAction {
@@ -142,6 +153,7 @@ export interface MerchantPolicy {
   id: string;
   maxRetries: number;
   maxCustomerContacts: number;
+  maxVoiceCallsPerDay: number;
   recoveryWindowHours: number;
   minRecoveryProbabilityForRetry: number;
   minAmountForVoiceRecovery: number;
@@ -166,7 +178,7 @@ export interface BatchRun {
   createdAt: string;
 }
 
-export type CampaignStatus = "DRAFT" | "SCHEDULED" | "RUNNING" | "PAUSED" | "COMPLETED";
+export type CampaignStatus = "DRAFT" | "SCHEDULED" | "RUNNING" | "PAUSED" | "COMPLETED" | "STOPPED";
 
 export interface RecoveryCampaign {
   id: string;
@@ -179,10 +191,16 @@ export interface RecoveryCampaign {
   escalatedCaseIds: string[];
   totalTargetAmount: number;
   totalRecoveredAmount: number;
+  humanRecoveredAmount: number;
   scheduledFor?: string;
   startedAt?: string;
   completedAt?: string;
   createdAt: string;
+  // Campaign config
+  voiceEnabled: boolean;
+  maxAttempts: number;
+  dailyVoiceLimit: number;
+  demoMode: boolean;
 }
 
 export interface ActivityFeedItem {

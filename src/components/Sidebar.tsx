@@ -12,11 +12,15 @@ import {
   Settings,
   Brain,
   Activity,
+  Zap,
+  ShieldAlert,
 } from "lucide-react";
 
 const navItems = [
-  { href: "/", label: "Dashboard", icon: LayoutDashboard },
+  { href: "/", label: "Command Center", icon: LayoutDashboard },
+  { href: "/campaigns/new", label: "Create Campaign", icon: Zap },
   { href: "/cases", label: "Recovery Cases", icon: FileSearch },
+  { href: "/human-intervention", label: "Human Intervention", icon: ShieldAlert },
   { href: "/batch", label: "Batch Recovery", icon: PlayCircle },
   { href: "/voice", label: "Voice Recovery", icon: Phone },
   { href: "/analytics", label: "Analytics", icon: BarChart3 },

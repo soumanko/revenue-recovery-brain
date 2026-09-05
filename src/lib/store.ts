@@ -9,7 +9,31 @@ import type {
   BatchRun,
   ActivityFeedItem,
   RecoveryCampaign,
+  FailureReason,
 } from "./types";
+
+// ─── Deterministic PRNG (LCG) ──────────────────────────────
+// Produces reproducible pseudo-random numbers from a seed so demo results are consistent.
+class SeededRandom {
+  private state: number;
+  constructor(seed: number) {
+    this.state = seed;
+  }
+  next(): number {
+    // Linear congruential generator
+    this.state = (this.state * 1664525 + 1013904223) & 0xffffffff;
+    return (this.state >>> 0) / 0xffffffff;
+  }
+  nextInt(min: number, max: number): number {
+    return min + Math.floor(this.next() * (max - min + 1));
+  }
+  pick<T>(arr: T[]): T {
+    return arr[Math.floor(this.next() * arr.length)];
+  }
+}
+
+// Global seeded RNG for deterministic simulation outcomes
+export const demoRng = new SeededRandom(42);
 
 // ─── In-Memory Data Store ────────────────────────────────────
 // Uses a singleton pattern to persist data across API calls within the same server instance.
@@ -32,10 +56,11 @@ class DataStore {
   constructor() {
     this.policy = {
       id: "default",
-      maxRetries: 2,
-      maxCustomerContacts: 2,
-      recoveryWindowHours: 48,
-      minRecoveryProbabilityForRetry: 65,
+      maxRetries: 3,
+      maxCustomerContacts: 3,
+      maxVoiceCallsPerDay: 3,
+      recoveryWindowHours: 72,
+      minRecoveryProbabilityForRetry: 35,
       minAmountForVoiceRecovery: 2000,
       enableVoiceRecovery: true,
       enableAutoRetry: true,
@@ -101,6 +126,7 @@ export function getStore(): DataStore {
 
 function seedData(db: DataStore) {
   const now = new Date();
+  const rng = new SeededRandom(2026);
 
   // ─── Seed Customers ─────────────────────────────────────
   const customerData: Omit<Customer, "id" | "createdAt">[] = [
@@ -137,24 +163,10 @@ function seedData(db: DataStore) {
     });
   });
 
-  // ─── Seed Revenue Risk Events ───────────────────────────
-  const failureReasons: Array<{ reason: RevenueRiskEvent["failureReason"]; isTransient: boolean }> = [
-    { reason: "bank_timeout", isTransient: true },
-    { reason: "temporary_gateway_failure", isTransient: true },
-    { reason: "network_error", isTransient: true },
-    { reason: "insufficient_funds", isTransient: false },
-    { reason: "card_declined", isTransient: false },
-    { reason: "authentication_failure", isTransient: false },
-    { reason: "card_expired", isTransient: false },
-  ];
+  // ─── Deterministic Flagship Cases ───────────────────────
+  // These 5 cases are preserved exactly as specified.
 
-  const eventTypes: Array<{ type: RevenueRiskEvent["eventType"]; weight: number }> = [
-    { type: "payment_failure", weight: 0.6 },
-    { type: "checkout_abandonment", weight: 0.25 },
-    { type: "subscription_failure", weight: 0.15 },
-  ];
-
-  // Case A - Guaranteed Voice Success
+  // Case A - Rahul: Transient bank timeout → voice recovery → success
   const caseA: RevenueRiskEvent = {
     id: db.nextEventId(),
     eventType: "payment_failure",
@@ -169,7 +181,7 @@ function seedData(db: DataStore) {
     updatedAt: new Date(now.getTime() - 15 * 60 * 1000).toISOString(),
   };
 
-  // Case B - Successful automatic retry
+  // Case B - Priya: Immediate retry success
   const caseB: RevenueRiskEvent = {
     id: db.nextEventId(),
     eventType: "payment_failure",
@@ -184,7 +196,7 @@ function seedData(db: DataStore) {
     updatedAt: new Date(now.getTime() - 10 * 60 * 1000).toISOString(),
   };
 
-  // Case C - Retry failure then fallback success
+  // Case C - Amit: Insufficient funds → delayed retry / voice fallback
   const caseC: RevenueRiskEvent = {
     id: db.nextEventId(),
     eventType: "payment_failure",
@@ -199,7 +211,7 @@ function seedData(db: DataStore) {
     updatedAt: new Date(now.getTime() - 25 * 60 * 1000).toISOString(),
   };
 
-  // Case D - Hard Stop
+  // Case D - Sneha: Hard decline → permanent stop
   const caseD: RevenueRiskEvent = {
     id: db.nextEventId(),
     eventType: "payment_failure",
@@ -214,16 +226,16 @@ function seedData(db: DataStore) {
     updatedAt: new Date(now.getTime() - 5 * 60 * 1000).toISOString(),
   };
 
-  // Case E - Policy stop (Max retries reached)
+  // Case E - Vikram: 3 attempts exhausted → human intervention (starts fresh, will be processed through 3 attempts)
   const caseE: RevenueRiskEvent = {
     id: db.nextEventId(),
     eventType: "payment_failure",
     customerId: customerIds[4], // Vikram
     amount: 4500,
     currency: "INR",
-    failureReason: "network_error",
+    failureReason: "network_error", // Transient but will fail each attempt
     orderId: "ORD_E",
-    retryCount: 3, // Over maxRetries (default 2)
+    retryCount: 0,
     previousSuccessfulPayments: 18,
     createdAt: new Date(now.getTime() - 30 * 60 * 1000).toISOString(),
     updatedAt: new Date(now.getTime() - 30 * 60 * 1000).toISOString(),
@@ -231,29 +243,98 @@ function seedData(db: DataStore) {
 
   const allEvents: RevenueRiskEvent[] = [caseA, caseB, caseC, caseD, caseE];
 
-  // Generate remaining random events
-  const amounts = [499, 799, 999, 1299, 1499, 1999, 2499, 2999, 3499, 3999, 4499, 4999, 5999, 6999, 7999, 8999, 9999, 11999, 12999, 14999, 17999, 19999, 24999, 29999, 34999, 39999, 44999, 49999];
+  // ─── Designed Demo Data Distribution ────────────────────
+  // Target: ~55% transient (high recovery), ~15% insufficient_funds (moderate),
+  // ~10% checkout_abandonment, ~10% permanent (card_declined/expired), ~10% auth failure
+  //
+  // This produces a realistic but demo-friendly recovery rate of ~50-65%.
 
-  for (let i = 0; i < 50; i++) {
+  const amounts = [1299, 1499, 1999, 2499, 2999, 3499, 3999, 4499, 4999, 5999, 6999, 7999, 8999, 9999, 11999, 14999, 17999, 24999];
+
+  // Distribution table: 50 additional events with controlled failure type distribution
+  interface EventTemplate {
+    failureReason: FailureReason;
+    eventType: RevenueRiskEvent["eventType"];
+  }
+
+  const eventTemplates: EventTemplate[] = [
+    // ~28 transient failures (56%) — high recovery rate
+    { failureReason: "bank_timeout", eventType: "payment_failure" },
+    { failureReason: "bank_timeout", eventType: "payment_failure" },
+    { failureReason: "bank_timeout", eventType: "payment_failure" },
+    { failureReason: "bank_timeout", eventType: "payment_failure" },
+    { failureReason: "bank_timeout", eventType: "payment_failure" },
+    { failureReason: "bank_timeout", eventType: "payment_failure" },
+    { failureReason: "bank_timeout", eventType: "payment_failure" },
+    { failureReason: "bank_timeout", eventType: "subscription_failure" },
+    { failureReason: "bank_timeout", eventType: "subscription_failure" },
+    { failureReason: "temporary_gateway_failure", eventType: "payment_failure" },
+    { failureReason: "temporary_gateway_failure", eventType: "payment_failure" },
+    { failureReason: "temporary_gateway_failure", eventType: "payment_failure" },
+    { failureReason: "temporary_gateway_failure", eventType: "payment_failure" },
+    { failureReason: "temporary_gateway_failure", eventType: "payment_failure" },
+    { failureReason: "temporary_gateway_failure", eventType: "payment_failure" },
+    { failureReason: "temporary_gateway_failure", eventType: "subscription_failure" },
+    { failureReason: "network_error", eventType: "payment_failure" },
+    { failureReason: "network_error", eventType: "payment_failure" },
+    { failureReason: "network_error", eventType: "payment_failure" },
+    { failureReason: "network_error", eventType: "payment_failure" },
+    { failureReason: "network_error", eventType: "payment_failure" },
+    { failureReason: "network_error", eventType: "payment_failure" },
+    { failureReason: "network_error", eventType: "subscription_failure" },
+    { failureReason: "network_error", eventType: "subscription_failure" },
+    { failureReason: "bank_timeout", eventType: "payment_failure" },
+    { failureReason: "temporary_gateway_failure", eventType: "payment_failure" },
+    { failureReason: "network_error", eventType: "payment_failure" },
+    { failureReason: "bank_timeout", eventType: "payment_failure" },
+    // ~7 insufficient_funds (14%) — moderate recovery (delayed retry)
+    { failureReason: "insufficient_funds", eventType: "payment_failure" },
+    { failureReason: "insufficient_funds", eventType: "payment_failure" },
+    { failureReason: "insufficient_funds", eventType: "payment_failure" },
+    { failureReason: "insufficient_funds", eventType: "payment_failure" },
+    { failureReason: "insufficient_funds", eventType: "subscription_failure" },
+    { failureReason: "insufficient_funds", eventType: "payment_failure" },
+    { failureReason: "insufficient_funds", eventType: "payment_failure" },
+    // ~5 checkout_abandonment (10%) — notification recovery
+    { failureReason: "abandoned", eventType: "checkout_abandonment" },
+    { failureReason: "abandoned", eventType: "checkout_abandonment" },
+    { failureReason: "abandoned", eventType: "checkout_abandonment" },
+    { failureReason: "abandoned", eventType: "checkout_abandonment" },
+    { failureReason: "abandoned", eventType: "checkout_abandonment" },
+    // ~5 permanent failures (10%) — card_declined / card_expired → stop
+    { failureReason: "card_declined", eventType: "payment_failure" },
+    { failureReason: "card_declined", eventType: "payment_failure" },
+    { failureReason: "card_expired", eventType: "subscription_failure" },
+    { failureReason: "card_expired", eventType: "payment_failure" },
+    { failureReason: "card_declined", eventType: "payment_failure" },
+    // ~5 auth failures (10%) — notification then escalation
+    { failureReason: "authentication_failure", eventType: "payment_failure" },
+    { failureReason: "authentication_failure", eventType: "payment_failure" },
+    { failureReason: "authentication_failure", eventType: "payment_failure" },
+    { failureReason: "authentication_failure", eventType: "subscription_failure" },
+    { failureReason: "authentication_failure", eventType: "payment_failure" },
+  ];
+
+  for (let i = 0; i < eventTemplates.length; i++) {
+    const template = eventTemplates[i];
     const id = db.nextEventId();
-    const customerId = customerIds[Math.floor(Math.random() * customerIds.length)];
-
-    const eventType = eventTypes[Math.floor(Math.random() * eventTypes.length)];
-    const reason = failureReasons[Math.floor(Math.random() * failureReasons.length)];
-    const amount = amounts[Math.floor(Math.random() * amounts.length)];
+    // Distribute customers across events, preferring hinglish speakers for voice eligibility
+    const custIndex = rng.nextInt(0, customerIds.length - 1);
+    const customerId = customerIds[custIndex];
+    const amount = rng.pick(amounts);
 
     allEvents.push({
       id,
-      eventType: eventType.type,
+      eventType: template.eventType,
       customerId,
       amount,
       currency: "INR",
-      failureReason: reason.reason,
-      orderId: `ORD_${uuidv4().slice(0, 6)}`,
+      failureReason: template.failureReason,
+      orderId: `ORD_${String(i + 6).padStart(3, "0")}`,
       retryCount: 0,
       previousSuccessfulPayments: db.customers.get(customerId)?.successfulPayments || 0,
-      createdAt: new Date(now.getTime() - Math.random() * 48 * 60 * 60 * 1000).toISOString(),
-      updatedAt: new Date(now.getTime() - Math.random() * 48 * 60 * 60 * 1000).toISOString(),
+      createdAt: new Date(now.getTime() - rng.nextInt(5, 120) * 60 * 1000).toISOString(),
+      updatedAt: new Date(now.getTime() - rng.nextInt(1, 5) * 60 * 1000).toISOString(),
     });
   }
 
@@ -266,32 +347,22 @@ function seedData(db: DataStore) {
       eventId: evt.id,
       customerId: evt.customerId,
       state: "DETECTED",
-      totalAttempts: evt.retryCount,
+      totalAttempts: 0,
       customerContacts: 0,
+      voiceCallsToday: 0,
       amountAtRisk: evt.amount,
       amountRecovered: 0,
+      humanRecoveredAmount: 0,
+      isHumanRecovery: false,
       isSimulated: true,
       createdAt: evt.createdAt,
       updatedAt: evt.updatedAt,
     });
   });
 
-  // ─── Seed a Campaign ─────────────────────────────────────────
-  const campaignId = db.nextCampaignId();
-  db.campaigns.set(campaignId, {
-    id: campaignId,
-    name: "High Value Rescue Campaign",
-    status: "RUNNING",
-    targetCaseIds: allEvents.map((evt) => Array.from(db.cases.values()).find(c => c.eventId === evt.id)?.id || ""),
-    processedCaseIds: [],
-    recoveredCaseIds: [],
-    failedCaseIds: [],
-    escalatedCaseIds: [],
-    totalTargetAmount: allEvents.reduce((sum, evt) => sum + evt.amount, 0),
-    totalRecoveredAmount: 0,
-    startedAt: new Date().toISOString(),
-    createdAt: new Date().toISOString(),
-  });
+  // NOTE: No auto-created RUNNING campaign. 
+  // Campaigns are created by the user via the Create Campaign form.
+  // The seed data only creates the cases/events — the campaign is user-initiated.
 }
 
 export type { DataStore };

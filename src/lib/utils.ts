@@ -51,10 +51,13 @@ export const stateLabels: Record<string, string> = {
   ACTION_SELECTED: "Action Selected",
   ACTION_EXECUTING: "Executing",
   WAITING_FOR_RESULT: "Awaiting Result",
+  DELAYED_RETRY_SCHEDULED: "Retry Scheduled",
+  VOICE_SCHEDULED: "Voice Scheduled",
   RECOVERED: "Recovered",
   FAILED: "Failed",
   STOPPED: "Stopped",
   ESCALATED: "Escalated",
+  HUMAN_CONTROLLED: "Human Controlled",
 };
 
 export const stateColors: Record<string, string> = {
@@ -63,10 +66,13 @@ export const stateColors: Record<string, string> = {
   ACTION_SELECTED: "bg-purple-500/20 text-purple-400 border-purple-500/30",
   ACTION_EXECUTING: "bg-orange-500/20 text-orange-400 border-orange-500/30",
   WAITING_FOR_RESULT: "bg-cyan-500/20 text-cyan-400 border-cyan-500/30",
+  DELAYED_RETRY_SCHEDULED: "bg-indigo-500/20 text-indigo-400 border-indigo-500/30",
+  VOICE_SCHEDULED: "bg-violet-500/20 text-violet-400 border-violet-500/30",
   RECOVERED: "bg-emerald-500/20 text-emerald-400 border-emerald-500/30",
   FAILED: "bg-red-500/20 text-red-400 border-red-500/30",
   STOPPED: "bg-gray-500/20 text-gray-400 border-gray-500/30",
   ESCALATED: "bg-amber-500/20 text-amber-400 border-amber-500/30",
+  HUMAN_CONTROLLED: "bg-rose-500/20 text-rose-400 border-rose-500/30",
 };
 
 export const eventTypeLabels: Record<string, string> = {
@@ -80,6 +86,8 @@ export const actionLabels: Record<string, string> = {
   delayed_retry: "Delayed Retry",
   customer_notification: "Customer Notification",
   hinglish_voice_call: "Hinglish Voice Call",
+  schedule_voice_recovery: "Voice Recovery (Scheduled)",
+  execute_voice_recovery: "Voice Recovery (Executed)",
   escalation: "Escalation",
   stop_recovery: "Stop Recovery",
 };
